@@ -16,7 +16,7 @@ cp .env.example .env                      # put your key in .env — it's auto-l
 # ...or skip .env and: export SCRAPINGBEE_API_KEY=...
 ```
 
-Get a key (1,000 free credits, no card) at https://www.scrapingbee.com/.
+Get a key (free trial, no card) at https://www.scrapingbee.com/.
 
 ## Use
 
