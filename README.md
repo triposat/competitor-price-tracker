@@ -43,7 +43,7 @@ Get a key (1,000 free credits, no card) at https://www.scrapingbee.com/.
 
    (Prices are live, so yours will differ.) Snapshots append to `history.csv`. Set `SLACK_WEBHOOK_URL` to post alerts to Slack; otherwise they print. The out-of-stock row is flagged but **not** alerted.
 
-3. Schedule it: commit and the included `.github/workflows/track.yml` runs it every 6 hours (set `SCRAPINGBEE_API_KEY` / `SLACK_WEBHOOK_URL` as repo secrets). Or use cron / a serverless cron.
+3. Schedule it: the included `.github/workflows/track.yml` is **manual by default** (so a cloned repo never spends credits unattended). Uncomment its `schedule:` block to run every 6 hours, and add `SCRAPINGBEE_API_KEY` / `SLACK_WEBHOOK_URL` as repo secrets. It commits each snapshot back to the repo (git-scraping). Or use cron / a serverless cron.
 
 ## Files
 
@@ -80,7 +80,9 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 - **Generic rows are JSON-LD-first.** `fetch_generic` parses a `schema.org/Product` block first (deterministic, 1 credit, no JS) and only falls back to AI extraction if the page has none. That dodges the biggest reliability problem: AI extraction sometimes returns HTTP 200 with `"Sorry, couldn't get the response from AI"` instead of JSON — and still bills. Even so, a site with neither JSON-LD nor AI-extractable content will fail; the tracker logs it and moves on rather than crashing.
 - **Alerts fire on change, not every run.** You're pinged when a competitor *newly* undercuts you (or drops further) **and** is in stock — not every 6 hours for a competitor that's been cheaper all week. Change detection needs prior history, which is why CI commits `history.csv` back (below).
 - **History accumulates via git-scraping.** `history.csv` is tracked on purpose: the GitHub Actions job checks it out, appends the new run, and commits it back, so price history builds up in git (diffable over time). Running locally also appends to it — that's expected. Trade-off: this adds a commit (and grows the CSV) every run, so over a year of 6-hourly runs the repo carries ~1,500 small commits — squash or roll the history to a database if that bothers you.
+- **Cross-currency is not compared.** Prices are compared only within `OUR_CURRENCY` (default USD); there's **no FX conversion**. A competitor priced in another currency is recorded and flagged `[currency …≠USD, not compared]` rather than silently mis-compared (€63 is not "cheaper" than $75). Add FX if you track multiple currencies.
 - **Marketplace prices move; Walmart varies by store.** One item id returned $13.83 / $13.52 / $9.88 across calls. Walmart's `store_id` is *meant* to pin a store for like-for-like comparison, but in testing it was slow/intermittent — verify it before relying on it.
+- **US-centric by design.** The Walmart parser is US-only and the worked example is Amazon.com/USD. Outside the US, use Amazon's `domain` and the generic path; Walmart won't apply.
 
 ## Cost — do the math before you scale
 

@@ -39,6 +39,7 @@ except KeyError:
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")  # optional; prints if unset
 THRESHOLD = float(os.environ.get("UNDERCUT_THRESHOLD", "0.05"))
+OUR_CURRENCY = os.environ.get("OUR_CURRENCY", "USD")  # we compare prices only in this currency (no FX)
 
 HTML_API = "https://app.scrapingbee.com/api/v1/"
 AMAZON_API = "https://app.scrapingbee.com/api/v1/amazon/product"
@@ -215,17 +216,24 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
                              normalize_currency(data["currency"]), bool(data["in_stock"]), our_price)
         snapshots.append(snap)
 
-        # alert only on a NEW undercut (or a further drop) and only if the competitor is in stock
-        now_uc = is_undercut(comp, our_price)
-        prev_uc = is_undercut(prev[0], prev[1]) if prev else False
+        # only compare prices in the same currency — this tracker does NOT do FX conversion,
+        # so a EUR competitor vs a USD price is flagged and skipped, not silently mis-compared.
+        currency_ok = (snap.currency or OUR_CURRENCY) == OUR_CURRENCY
+        now_uc = currency_ok and is_undercut(comp, our_price)
+        prev_uc = bool(prev) and currency_ok and is_undercut(prev[0], prev[1])
         if snap.in_stock and now_uc and (not prev_uc or comp < prev[0] - 0.01):
             pct = (our_price - comp) / our_price * 100
             send_alert(f":rotating_light: {sku}: {snap.competitor} {snap.currency} {comp} "
                        f"vs our {our_price} ({pct:.1f}% lower)")
 
-        flag = f"  <-- UNDERCUT {((our_price - comp) / our_price * 100):.1f}%" if now_uc else ""
+        if not currency_ok:
+            note = f"  [currency {snap.currency}≠{OUR_CURRENCY}, not compared]"
+        elif now_uc:
+            note = f"  <-- UNDERCUT {((our_price - comp) / our_price * 100):.1f}%"
+        else:
+            note = ""
         stock = "" if snap.in_stock else " [OUT OF STOCK]"
-        print(f"  {sku:12} {snap.competitor:8} {snap.currency} {comp} (ours {our_price}){flag}{stock}")
+        print(f"  {sku:12} {snap.competitor:8} {snap.currency} {comp} (ours {our_price}){note}{stock}")
 
     if not snapshots:
         print("No snapshots captured.")

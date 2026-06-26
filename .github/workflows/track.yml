@@ -1,11 +1,15 @@
 name: price-tracker
+
+# Scheduled runs are OFF by default so a cloned/template repo never spends API credits
+# unattended. Uncomment the `schedule` block to enable a real cron, or run it by hand
+# from the Actions tab (workflow_dispatch).
 on:
-  schedule:
-    - cron: "0 */6 * * *"   # every 6 hours
+  # schedule:
+  #   - cron: "0 */6 * * *"   # every 6 hours — uncomment to enable
   workflow_dispatch:
 
 permissions:
-  contents: write            # needed to commit the updated history back
+  contents: write            # needed to commit the snapshot back
 
 concurrency:                 # never let two runs race on the history commit
   group: price-tracker
@@ -15,20 +19,20 @@ jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4   # restores the existing history.csv so it accumulates
+      - uses: actions/checkout@v4   # restores history.csv so it accumulates
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
+      - run: pip install requests beautifulsoup4 python-dotenv   # tracker core only
       - run: python tracker.py
         env:
           SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      - name: Commit updated history   # git-scraping: the repo IS the price-history store
+          OUR_CURRENCY: USD
+      - name: Commit the snapshot   # git-scraping: one snapshot per run is intentional
         run: |
           git config user.name  "price-tracker-bot"
           git config user.email "actions@users.noreply.github.com"
           git add history.csv
-          git diff --cached --quiet && { echo "no price change"; exit 0; }
-          git commit -m "price snapshot $(date -u +%FT%TZ) [skip ci]"
+          git commit -m "price snapshot $(date -u +%FT%TZ) [skip ci]" || exit 0
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push
