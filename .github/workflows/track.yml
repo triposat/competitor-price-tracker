@@ -19,8 +19,8 @@ jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4   # restores history.csv so it accumulates
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6   # restores history.csv so it accumulates
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install requests beautifulsoup4 python-dotenv   # tracker core only
       - run: python tracker.py
