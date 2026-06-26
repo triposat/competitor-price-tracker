@@ -1,1 +1,4 @@
 timestamp,our_sku,competitor,comp_price,currency,in_stock,our_price
+2026-06-26T05:16:36+00:00,MOUSE-001,amazon,12.15,USD,True,14.99
+2026-06-26T05:16:36+00:00,MOUSE-002,walmart,9.88,USD,True,14.99
+2026-06-26T05:16:36+00:00,HOODIE-009,generic,69.0,USD,False,75.0
