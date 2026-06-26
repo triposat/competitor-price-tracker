@@ -4,6 +4,8 @@ A small, working competitor-price tracker built on the [ScrapingBee](https://www
 
 It fetches Amazon and Walmart via ScrapingBee's dedicated parsers and any other retailer via the HTML API with AI extraction, normalizes everything into one schema, stores snapshots, and alerts on undercuts.
 
+> **Status:** a point-in-time companion (last tested June 2026), not a maintained product. Dependencies, GitHub Actions versions, and the ScrapingBee API surface move over time — bump them as needed. The patterns are the durable part; the version pins and exact field names are not.
+
 ## Setup
 
 Requires **Python 3.10+**.
