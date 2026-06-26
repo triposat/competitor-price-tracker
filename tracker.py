@@ -23,10 +23,19 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
+if sys.version_info < (3, 10):
+    sys.exit("This tracker requires Python 3.10+.")
+
+try:                                   # load a local .env if python-dotenv is installed
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 try:
     API_KEY = os.environ["SCRAPINGBEE_API_KEY"]
 except KeyError:
-    sys.exit("Set SCRAPINGBEE_API_KEY before running (see .env.example).")
+    sys.exit("Set SCRAPINGBEE_API_KEY before running (export it or put it in .env).")
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")  # optional; prints if unset
 THRESHOLD = float(os.environ.get("UNDERCUT_THRESHOLD", "0.05"))

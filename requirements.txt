@@ -1,6 +1,7 @@
 # Core tracker
 requests>=2.31
 beautifulsoup4>=4.12      # JSON-LD parsing on the generic path
+python-dotenv>=1.0        # load SCRAPINGBEE_API_KEY from a .env file
 
 # Optional: MCP server (mcp_server.py) + DuckDB analytics
 duckdb>=1.0
