@@ -76,7 +76,7 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 # LOGITECH-B004YA,amazon,B004YAVF8I,14.99    # conf=0.95 via model [ok] M185 Wireless Mouse, 2.4GHz ...
 ```
 
-## How it behaves (so nothing surprises you)
+## How it behaves
 
 - **Generic rows are JSON-LD-first.** `fetch_generic` parses a `schema.org/Product` block first (deterministic, 1 credit, no JS) and only falls back to AI extraction if the page has none. That dodges the biggest reliability problem: AI extraction sometimes returns HTTP 200 with `"Sorry, couldn't get the response from AI"` instead of JSON — and still bills. Even so, a site with neither JSON-LD nor AI-extractable content will fail; the tracker logs it and moves on rather than crashing.
 - **Alerts fire on change, not every run.** You're pinged when a competitor *newly* undercuts you (or drops further) **and** is in stock — not every 6 hours for a competitor that's been cheaper all week. Change detection needs prior history, which is why CI commits `history.csv` back (below).
