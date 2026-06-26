@@ -63,14 +63,27 @@ python matcher.py
 #  [no match] conf=0.1  via model :: Logitech M510 Wireless Mouse, 2.4 GHz USB Unifying Rece
 ```
 
-Auto-accept high-confidence matches; queue `needs_review` pairs for a human.
+Auto-accept high-confidence matches; queue `needs_review` pairs for a human. **This matcher is a starting point, not a finished system** — it handles the demo cleanly, but real catalogs (thousands of SKUs, missing GTINs, variants, bundles, refurb-vs-new) need more than a regex and `difflib`. Treat it as the skeleton to build on, and lean on GTIN/UPC whenever your data has it.
 
-## Honest limits (tested, June 2026)
+## How it behaves (so nothing surprises you)
 
-- **AI extraction (`generic` rows) is flaky.** ScrapingBee sometimes returns HTTP 200 with `"Sorry, couldn't get the response from AI"` instead of JSON, and bills for it. `fetch_generic` retries up to 5× and raises if it never succeeds; the tracker skips that SKU rather than crashing.
-- **Marketplace prices move and Walmart varies by store** — one item id returned $13.83 / $13.52 / $9.88 across calls. Pin a store with `store_id` for like-for-like comparisons.
-- **Credit costs:** Amazon/Walmart parsers 5–15 each; HTML API 1 (no JS) / 5 (JS); +5 for AI extraction; stealth 75. Check `https://app.scrapingbee.com/api/v1/usage`.
+- **Generic rows are JSON-LD-first.** `fetch_generic` parses a `schema.org/Product` block first (deterministic, 1 credit, no JS) and only falls back to AI extraction if the page has none. That dodges the biggest reliability problem: AI extraction sometimes returns HTTP 200 with `"Sorry, couldn't get the response from AI"` instead of JSON — and still bills. Even so, a site with neither JSON-LD nor AI-extractable content will fail; the tracker logs it and moves on rather than crashing.
+- **Alerts fire on change, not every run.** You're pinged when a competitor *newly* undercuts you (or drops further) **and** is in stock — not every 6 hours for a competitor that's been cheaper all week. Change detection needs prior history, which is why CI commits `history.csv` back (below).
+- **History accumulates via git-scraping.** `history.csv` is tracked on purpose: the GitHub Actions job checks it out, appends the new run, and commits it back, so price history builds up in git (diffable over time). Running locally also appends to it — that's expected.
+- **Marketplace prices move; Walmart varies by store.** One item id returned $13.83 / $13.52 / $9.88 across calls. Pin a store with `store_id` for like-for-like comparison.
 
-## Credit cost per run
+## Cost — do the math before you scale
 
-The sample `targets.csv` (1 Amazon + 1 Walmart + 1 generic-with-AI) costs ~25 credits per run.
+| scope | credits/run | rough monthly (daily run) |
+|---|---|---|
+| 3 SKUs (this demo) | ~20–25 | negligible |
+| 100 SKUs | ~500–1,500 | ~15k–45k |
+| 500 SKUs | ~2,500–7,500 | ~75k–225k |
+
+(Amazon/Walmart parsers 5–15 each; HTML API 1 no-JS / 5 JS; +5 for AI extraction.) The free trial's 1,000 credits is enough to *evaluate*, not to run a real catalog — budget a paid plan for production, and check spend at `https://app.scrapingbee.com/api/v1/usage`.
+
+## Troubleshooting
+
+- `401` / "check SCRAPINGBEE_API_KEY" → key missing or wrong; the tracker exits with that message.
+- `429` → you exceeded your plan's concurrency cap; the session already retries with backoff.
+- `pip install` fails on a very new/locked-down Python → install the core only (`pip install requests beautifulsoup4`); `duckdb`/`mcp` are needed only for `mcp_server.py`.

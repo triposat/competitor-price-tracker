@@ -1,10 +1,7 @@
 # Core tracker
 requests>=2.31
+beautifulsoup4>=4.12      # JSON-LD parsing on the generic path
 
 # Optional: MCP server (mcp_server.py) + DuckDB analytics
 duckdb>=1.0
 mcp>=1.0
-
-# Optional: Parquet history via pandas
-# pandas>=2.0
-# pyarrow>=15.0

@@ -1,5 +1,4 @@
-# Generated at runtime
-history.csv
+# history.csv is intentionally TRACKED — the CI workflow commits it back (git-scraping)
 history.parquet
 
 # Secrets

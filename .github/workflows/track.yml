@@ -3,11 +3,15 @@ on:
   schedule:
     - cron: "0 */6 * * *"   # every 6 hours
   workflow_dispatch:
+
+permissions:
+  contents: write            # needed to commit the updated history back
+
 jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4   # restores the existing history.csv so it accumulates
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
@@ -15,7 +19,10 @@ jobs:
         env:
           SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      - uses: actions/upload-artifact@v4   # keep the appended history between runs
-        with:
-          name: price-history
-          path: history.csv
+      - name: Commit updated history   # git-scraping: the repo IS the price-history store
+        run: |
+          git config user.name  "price-tracker-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add history.csv
+          git diff --cached --quiet || git commit -m "price snapshot $(date -u +%FT%TZ) [skip ci]"
+          git push
