@@ -1,0 +1,12 @@
+# Generated at runtime
+history.csv
+history.parquet
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
