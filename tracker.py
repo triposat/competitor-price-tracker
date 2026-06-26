@@ -241,7 +241,9 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
 
     write_header = not os.path.exists(history)
     with open(history, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[fld.name for fld in fields(PriceSnapshot)])
+        # lineterminator="\n" so appended rows match the LF header — a mixed LF/CRLF file
+        # breaks DuckDB's CSV sniffer (and the MCP/analytics path that reads it)
+        writer = csv.DictWriter(f, fieldnames=[fld.name for fld in fields(PriceSnapshot)], lineterminator="\n")
         if write_header:
             writer.writeheader()
         writer.writerows(asdict(s) for s in snapshots)

@@ -5,4 +5,4 @@ python-dotenv>=1.0        # load SCRAPINGBEE_API_KEY from a .env file
 
 # Optional: MCP server (mcp_server.py) + DuckDB analytics
 duckdb>=1.0
-mcp>=1.0
+fastmcp>=2.0

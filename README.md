@@ -99,7 +99,7 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 
 - `401` / "check SCRAPINGBEE_API_KEY" → key missing or wrong; the tracker exits with that message.
 - `429` → you exceeded your plan's concurrency cap; the session already retries with backoff.
-- `pip install` fails on a very new/locked-down Python → install the core only (`pip install requests beautifulsoup4 python-dotenv`); `duckdb`/`mcp` are needed only for `mcp_server.py`.
+- `pip install` fails on a very new/locked-down Python → install the core only (`pip install requests beautifulsoup4 python-dotenv`); `duckdb`/`fastmcp` are needed only for `mcp_server.py`.
 
 ## Tests
 
