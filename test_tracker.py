@@ -80,6 +80,19 @@ def test_cross_currency_not_compared():
     assert run([["A", "amazon", "IDA", "10.00"]]) == (0, 1)
 
 
+def test_proxy_params():
+    assert tracker._proxy_params(None) == {"render_js": "false"}
+    assert tracker._proxy_params("premium") == {"premium_proxy": "true", "render_js": "true"}
+    assert tracker._proxy_params("stealth") == {"stealth_proxy": "true"}
+
+
+def test_parse_price_text():
+    assert tracker._parse_price_text("£51.77") == (51.77, "GBP")
+    assert tracker._parse_price_text("$69.00") == (69.0, "USD")
+    assert tracker._parse_price_text("1.299,00 €") == (1299.0, "EUR")   # EU format
+    assert tracker._parse_price_text("1,299.00") == (1299.0, None)      # US format, no symbol
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
