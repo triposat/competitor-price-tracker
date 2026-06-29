@@ -10,7 +10,7 @@ import os
 import tempfile
 from contextlib import redirect_stdout
 
-os.environ.setdefault("SCRAPINGBEE_API_KEY", "dummy-for-tests")  # tracker reads this at import
+os.environ.setdefault("SCRAPINGBEE_API_KEY", "unused-in-tests")  # read at import; fetchers are mocked, no real calls
 os.environ["UNDERCUT_THRESHOLD"] = "0.05"
 os.environ["OUR_CURRENCY"] = "USD"
 
