@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, asdict, fields
 from datetime import datetime, timezone
@@ -140,13 +141,72 @@ def _jsonld_price(html: str) -> dict[str, Any] | None:
     return None
 
 
-def fetch_generic(s: requests.Session, url: str, attempts: int = 3) -> dict[str, Any]:
-    # 1. JSON-LD first — deterministic, 1 credit, no JS
+def _parse_price_text(text: str) -> tuple[float | None, str | None]:
+    """Pull a number + currency out of a price string like '£51.77' or '1.299,00 €'."""
+    currency = next((c for s, c in CURRENCY_SYMBOLS.items() if s in text), None)
+    m = re.search(r"\d[\d.,\s]*\d|\d", text)
+    if not m:
+        return None, currency
+    raw = m.group(0).replace(" ", "")
+    if "," in raw and "." in raw:                # 1.299,00 or 1,299.00 — last separator is the decimal
+        raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
+    elif "," in raw:                             # comma is decimal only if exactly 2 trailing digits
+        raw = raw.replace(",", ".") if re.search(r",\d{2}$", raw) else raw.replace(",", "")
+    try:
+        return float(raw), currency
+    except ValueError:
+        return None, currency
+
+
+def _css_price(html: str, selector: str) -> dict[str, Any] | None:
+    """Per-site override: read the price straight from a CSS selector you supply."""
+    el = BeautifulSoup(html, "html.parser").select_one(selector)
+    if not el:
+        return None
+    price, currency = _parse_price_text(el.get_text(" ", strip=True))
+    return None if price is None else {"price": price, "currency": currency, "in_stock": True}
+
+
+def _meta_price(html: str) -> dict[str, Any] | None:
+    """OpenGraph / microdata price meta — present on many sites that lack JSON-LD."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    def meta(*keys: str) -> str | None:
+        for k in keys:
+            el = soup.find("meta", property=k) or soup.find("meta", attrs={"name": k})
+            if el and el.get("content"):
+                return el["content"]
+        return None
+
+    amount = meta("product:price:amount", "og:price:amount")
+    if not amount:
+        el = soup.find(attrs={"itemprop": "price"})
+        amount = (el.get("content") or el.get_text(strip=True)) if el else None
+    if not amount:
+        return None
+    price, sym_cur = _parse_price_text(str(amount))
+    if price is None:
+        return None
+    avail = meta("product:availability", "og:availability") or ""
+    return {"price": price,
+            "currency": meta("product:price:currency", "og:price:currency") or sym_cur,
+            "in_stock": "out" not in avail.lower()}
+
+
+def fetch_generic(s: requests.Session, url: str, selector: str | None = None,
+                  attempts: int = 3) -> dict[str, Any]:
+    # One cheap no-JS fetch covers the three deterministic paths (1 credit).
     r = s.get(HTML_API, params={"url": url, "render_js": "false"}, timeout=90)
     _check_auth(r)
-    if r.ok and (data := _jsonld_price(r.text)):
-        return data
-    # 2. Fall back to AI extraction (can 200 with a non-JSON "Sorry..." body, still billed)
+    html = r.text if r.ok else ""
+    if html:
+        if selector and (data := _css_price(html, selector)):   # 1. your per-site override
+            return data
+        if (data := _jsonld_price(html)):                       # 2. schema.org/Product JSON-LD
+            return data
+        if (data := _meta_price(html)):                         # 3. OpenGraph / microdata meta
+            return data
+    # 4. AI extraction — last resort (flaky; can 200 with a non-JSON "Sorry..." body, still billed)
     for _ in range(attempts):
         r = s.get(HTML_API, params={"url": url, "ai_extract_rules": json.dumps(AI_RULES)}, timeout=120)
         _check_auth(r)
@@ -156,7 +216,7 @@ def fetch_generic(s: requests.Session, url: str, attempts: int = 3) -> dict[str,
             continue
         if d.get("price") is not None:
             return {"price": d["price"], "currency": d.get("currency"), "in_stock": d.get("in_stock")}
-    raise RuntimeError(f"no price from {url} (JSON-LD + {attempts} AI attempts)")
+    raise RuntimeError(f"no price from {url} (selector/JSON-LD/meta + {attempts} AI attempts)")
 
 
 DISPATCH: dict[str, Callable[[requests.Session, str], dict[str, Any]]] = {
@@ -198,7 +258,10 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
     for t in rows:
         sku = t["our_sku"]
         try:
-            data = DISPATCH[t["source"]](session, t["identifier"])
+            if t["source"] == "generic":
+                data = fetch_generic(session, t["identifier"], selector=(t.get("selector") or None))
+            else:
+                data = DISPATCH[t["source"]](session, t["identifier"])
         except (requests.RequestException, RuntimeError) as e:
             print(f"  ! {sku}: fetch failed ({e})")
             continue
