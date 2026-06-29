@@ -29,6 +29,7 @@ Get a key (free trial, no card) at https://www.scrapingbee.com/.
    | `identifier`| the ASIN / item id / URL                                       |
    | `our_price` | your current price, for the undercut comparison               |
    | `selector`  | *(optional, `generic` rows)* a CSS selector for the price, when auto-extraction can't find it |
+   | `proxy`     | *(optional, `generic` rows)* `premium` or `stealth` for sites behind Cloudflare/DataDome (25 / 75 credits) |
 
 2. Run it:
 
@@ -82,6 +83,8 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 ## How it behaves
 
 - **Generic rows use a deterministic cascade, AI last.** `fetch_generic` tries, in order: a **per-site CSS `selector`** you set in `targets.csv` → **JSON-LD** (`schema.org/Product`) → **OpenGraph/microdata price meta** → and only then **AI extraction**. The first three are deterministic and cost 1 credit; AI is the flaky/expensive fallback (it sometimes 200s with `"Sorry, couldn't get the response from AI"` instead of JSON, and still bills). So most sites resolve without AI — and for the awkward ones, **add a `selector` and any public product page becomes trackable** instead of failing. If all four miss, the tracker logs it and moves on rather than crashing.
+- **Protected sites: escalate the proxy per target.** A site behind Cloudflare/DataDome blocks the cheap fetch, so the whole cascade comes up empty. Set `proxy=premium` (residential + JS, 25 credits) or `proxy=stealth` (hardest anti-bot, 75 credits) on that target and the cascade runs through the right proxy instead of getting blocked. It's per-target and opt-in, so you don't silently pay stealth rates for sites that don't need it.
+- **Fetches run concurrently.** The tracker fans out with a thread pool (`MAX_WORKERS`, default 8 — set it to your plan's concurrency cap), so hundreds of SKUs refresh in the time a sequential loop handles a dozen. Results are still processed in order, so alerts and history stay deterministic.
 - **Alerts fire on change, not every run.** You're pinged when a competitor *newly* undercuts you (or drops further) **and** is in stock — not every 6 hours for a competitor that's been cheaper all week. Change detection needs prior history, which is why CI commits `history.csv` back (below).
 - **History accumulates via git-scraping.** `history.csv` is tracked on purpose: the GitHub Actions job checks it out, appends the new run, and commits it back, so price history builds up in git (diffable over time). Running locally also appends to it — that's expected. Trade-offs: it adds a commit (and grows the CSV) every run, so over a year of 6-hourly runs the repo carries ~1,500 small commits (squash or roll to a database if that bothers you); and the bot pushes to the default branch, so if you **protect** that branch, point the workflow at an unprotected data branch or a database instead.
 - **Cross-currency is not compared.** Prices are compared only within `OUR_CURRENCY` (default USD); there's **no FX conversion**. A competitor priced in another currency is recorded and flagged `[currency …≠USD, not compared]` rather than silently mis-compared (€63 is not "cheaper" than $75). Add FX if you track multiple currencies.

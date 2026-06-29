@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, fields
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -41,6 +42,7 @@ except KeyError:
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")  # optional; prints if unset
 THRESHOLD = float(os.environ.get("UNDERCUT_THRESHOLD", "0.05"))
 OUR_CURRENCY = os.environ.get("OUR_CURRENCY", "USD")  # we compare prices only in this currency (no FX)
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "8"))  # concurrent fetches; keep <= your plan's concurrency cap
 
 HTML_API = "https://app.scrapingbee.com/api/v1/"
 AMAZON_API = "https://app.scrapingbee.com/api/v1/amazon/product"
@@ -193,10 +195,21 @@ def _meta_price(html: str) -> dict[str, Any] | None:
             "in_stock": "out" not in avail.lower()}
 
 
+def _proxy_params(proxy: str | None) -> dict[str, str]:
+    """Per-target proxy tier for protected sites. classic=1 credit (no JS); premium=25
+    (residential + JS, for Cloudflare/DataDome); stealth=75 (hardest anti-bot, JS forced)."""
+    if proxy == "premium":
+        return {"premium_proxy": "true", "render_js": "true"}
+    if proxy == "stealth":
+        return {"stealth_proxy": "true"}        # stealth forces JS on
+    return {"render_js": "false"}               # classic: cheap deterministic pass
+
+
 def fetch_generic(s: requests.Session, url: str, selector: str | None = None,
-                  attempts: int = 3) -> dict[str, Any]:
-    # One cheap no-JS fetch covers the three deterministic paths (1 credit).
-    r = s.get(HTML_API, params={"url": url, "render_js": "false"}, timeout=90)
+                  proxy: str | None = None, attempts: int = 3) -> dict[str, Any]:
+    # Deterministic pass (classic=1 credit; premium/stealth fetch with JS so the cascade
+    # works on protected, JS-rendered pages too).
+    r = s.get(HTML_API, params={"url": url, **_proxy_params(proxy)}, timeout=120)
     _check_auth(r)
     html = r.text if r.ok else ""
     if html:
@@ -207,8 +220,11 @@ def fetch_generic(s: requests.Session, url: str, selector: str | None = None,
         if (data := _meta_price(html)):                         # 3. OpenGraph / microdata meta
             return data
     # 4. AI extraction — last resort (flaky; can 200 with a non-JSON "Sorry..." body, still billed)
+    ai = {"url": url, "ai_extract_rules": json.dumps(AI_RULES)}
+    if proxy in ("premium", "stealth"):
+        ai[f"{proxy}_proxy"] = "true"
     for _ in range(attempts):
-        r = s.get(HTML_API, params={"url": url, "ai_extract_rules": json.dumps(AI_RULES)}, timeout=120)
+        r = s.get(HTML_API, params=ai, timeout=120)
         _check_auth(r)
         try:
             d = r.json()
@@ -246,6 +262,18 @@ def send_alert(text: str) -> None:
         print("ALERT:", text)
 
 
+def _fetch_target(session: requests.Session, t: dict) -> tuple[dict | None, str | None]:
+    """Fetch one target. Returns (data, None) or (None, error) — safe to run in the pool."""
+    try:
+        if t["source"] == "generic":
+            return fetch_generic(session, t["identifier"],
+                                 selector=(t.get("selector") or None),
+                                 proxy=(t.get("proxy") or None)), None
+        return DISPATCH[t["source"]](session, t["identifier"]), None
+    except (requests.RequestException, RuntimeError) as e:
+        return None, str(e)
+
+
 def track(targets: str = "targets.csv", history: str = "history.csv") -> list[PriceSnapshot]:
     session = build_session()
     last_state = load_last_state(history)
@@ -255,15 +283,15 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
     with open(targets, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
-    for t in rows:
+    # Fetch concurrently (network-bound); keep MAX_WORKERS <= your plan's concurrency cap.
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        results = list(pool.map(lambda t: _fetch_target(session, t), rows))
+
+    # Process in row order so alerts and history stay deterministic.
+    for t, (data, err) in zip(rows, results):
         sku = t["our_sku"]
-        try:
-            if t["source"] == "generic":
-                data = fetch_generic(session, t["identifier"], selector=(t.get("selector") or None))
-            else:
-                data = DISPATCH[t["source"]](session, t["identifier"])
-        except (requests.RequestException, RuntimeError) as e:
-            print(f"  ! {sku}: fetch failed ({e})")
+        if err:
+            print(f"  ! {sku}: fetch failed ({err})")
             continue
 
         comp, our_price = data["price"], float(t["our_price"])

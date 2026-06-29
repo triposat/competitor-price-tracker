@@ -1,4 +1,4 @@
-our_sku,source,identifier,our_price,selector
-MOUSE-001,amazon,B004YAVF8I,14.99,
-MOUSE-002,walmart,15545702811,14.99,
-HOODIE-009,generic,https://www.scrapingcourse.com/ecommerce/product/abominable-hoodie,75.00,
+our_sku,source,identifier,our_price,selector,proxy
+MOUSE-001,amazon,B004YAVF8I,14.99,,
+MOUSE-002,walmart,15545702811,14.99,,
+HOODIE-009,generic,https://www.scrapingcourse.com/ecommerce/product/abominable-hoodie,75.00,,
