@@ -56,6 +56,7 @@ Get a key (free trial, no card) at https://www.scrapingbee.com/.
 | `tracker.py`       | fetch → normalize → store → alert (the main script) |
 | `matcher.py`       | SKU matching: GTIN-first, then model code, then fuzzy title (with confidence) |
 | `build_targets.py` | search a keyword + match results to your product → suggested `targets.csv` rows |
+| `ai_surface.py`    | how an AI assistant prices/ranks a product right now (ScrapingBee ChatGPT endpoint) — the surface buyers increasingly check |
 | `mcp_server.py`    | exposes the history as an MCP tool (`undercuts`) an assistant can call |
 | `test_tracker.py`  | deterministic tests for the alert logic (no API) — `python test_tracker.py` |
 | `targets.csv`      | your watch list |
