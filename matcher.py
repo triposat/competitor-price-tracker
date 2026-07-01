@@ -1,10 +1,11 @@
 """SKU matching — decide whether a competitor product is actually yours.
 
-This is the part that turns a price feed into signal instead of noise: a competitor's
+This is a big part of turning a price feed into signal instead of noise: a competitor's
 "Logitech Wireless Mouse" is not necessarily your SKU. Strategy:
   1. Exact match on GTIN/UPC/EAN if both sides have one. ScrapingBee's Walmart parser
      returns `gtin`; Amazon's `product_details` often carries a UPC/EAN — use them.
-  2. Otherwise, fuzzy-match normalized titles and return a confidence score so you can
+  2. Else compare model codes (M185 != M510) — the real discriminator for same-brand items.
+  3. Else fuzzy-match normalized titles and return a confidence score so you can
      auto-accept high-confidence pairs and queue the rest for human review.
 
 Standard library only (difflib). Swap in rapidfuzz if you need speed at scale.

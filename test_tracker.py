@@ -30,7 +30,8 @@ def run(targets_rows, history_rows=None):
     if history_rows is not None:
         with open(hpath, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["timestamp", "our_sku", "competitor", "comp_price", "currency", "in_stock", "our_price"])
+            w.writerow(["timestamp", "our_sku", "competitor", "comp_price", "currency",
+                    "in_stock", "our_price", "seller", "condition"])
             w.writerows(history_rows)
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -42,9 +43,9 @@ def run(targets_rows, history_rows=None):
 
 
 TARGETS = [["A", "amazon", "IDA", "10.00"], ["B", "amazon", "IDB", "10.00"], ["C", "amazon", "IDC", "10.00"]]
-HIST = [["t", "A", "amazon", "8.0", "USD", "True", "10.0"],
-        ["t", "B", "amazon", "8.0", "USD", "False", "10.0"],
-        ["t", "C", "amazon", "12.0", "USD", "True", "10.0"]]
+HIST = [["t", "A", "amazon", "8.0", "USD", "True", "10.0", "Amazon.com", "New"],
+        ["t", "B", "amazon", "8.0", "USD", "False", "10.0", "Amazon.com", "New"],
+        ["t", "C", "amazon", "12.0", "USD", "True", "10.0", "Amazon.com", "New"]]
 
 
 def _set(ida, idb=(8.0, False), idc=(12.0, True)):
@@ -78,6 +79,63 @@ def test_cross_currency_not_compared():
     global FAKE
     FAKE = {"IDA": {"price": 5.0, "currency": "EUR", "in_stock": True}}
     assert run([["A", "amazon", "IDA", "10.00"]]) == (0, 1)
+
+
+def test_noncomparable_offer_not_alerted():
+    # A "Used" Buy Box far below our price must NOT fire an undercut alert (different
+    # condition), but it's still recorded — so a wrong-offer comparison is visible, not silent.
+    global FAKE
+    FAKE = {"IDA": {"price": 5.0, "currency": "USD", "in_stock": True,
+                    "comparable": False, "condition": "Used - Very Good", "note": "Buy Box offer is 'Used'"}}
+    assert run([["A", "amazon", "IDA", "10.00"]]) == (0, 1)
+
+
+def test_health_alarm_on_mass_failure():
+    # 2 of 3 targets return no price -> a health alarm fires (dead-man's-switch for the
+    # tracker itself), while the one good row is still recorded.
+    global FAKE
+    FAKE = {"IDA": {"price": None, "currency": None, "in_stock": False},
+            "IDB": {"price": None, "currency": None, "in_stock": False},
+            "IDC": {"price": 10.0, "currency": "USD", "in_stock": True}}  # priced, not an undercut
+    rows_in = [["A", "amazon", "IDA", "10.00"], ["B", "amazon", "IDB", "10.00"], ["C", "amazon", "IDC", "10.00"]]
+    assert run(rows_in) == (1, 1)   # 1 health ALERT, 1 row stored
+
+
+def test_one_flaky_sku_does_not_trip_health_alarm():
+    # A single failing SKU among healthy ones must NOT page you (avoid alarm fatigue).
+    global FAKE
+    FAKE = {"IDA": {"price": None, "currency": None, "in_stock": False},
+            "IDB": {"price": 12.0, "currency": "USD", "in_stock": True},
+            "IDC": {"price": 12.0, "currency": "USD", "in_stock": True}}
+    assert run([["A", "amazon", "IDA", "10.00"], ["B", "amazon", "IDB", "10.00"],
+                ["C", "amazon", "IDC", "10.00"]]) == (0, 2)   # no alert; 2 rows stored
+
+
+def test_currency_symbol_disambiguation():
+    # £/€ are unambiguous. A bare "$" is assumed OUR_CURRENCY (USD here) since it's plausibly
+    # yours; "¥" is kept as a foreign marker (not silently turned into USD) so the guard blocks it.
+    assert tracker._parse_price_text("$20.00")[1] == "USD"
+    assert tracker._parse_price_text("€9,99")[1] == "EUR"
+    assert tracker._parse_price_text("¥2000")[1] == "¥"        # foreign to a USD seller -> kept, not "USD"
+    assert tracker._symbol_currency("$5") == "USD" and tracker._symbol_currency("kr 50") is None
+
+
+def test_amazon_offer_parsing():
+    # New, single-pack Buy Box from Amazon.com -> comparable, no note.
+    new = tracker._amazon_offer({
+        "buybox": [{"condition": " Buy New ", "seller_name": "Amazon.com", "price": 13.99}],
+        "variations": [{"dimensions": {"Size": "1 Pack"}, "selected": True}]})
+    assert new == {"seller": "Amazon.com", "condition": "New", "comparable": True, "note": ""}
+    # Used Buy Box -> not comparable, explains why.
+    used = tracker._amazon_offer({"buybox": [{"condition": " Used - Very Good ", "price": 7.72}]})
+    assert used["condition"] == "Used - Very Good" and used["comparable"] is False and "not comparable" in used["note"]
+    # Multipack variant selected -> not comparable.
+    mp = tracker._amazon_offer({
+        "buybox": [{"condition": "Buy New", "seller_name": "Amazon.com"}],
+        "variations": [{"dimensions": {"Size": "4 Pack"}, "selected": True}]})
+    assert mp["comparable"] is False and "multipack" in mp["note"].lower()
+    # No Buy Box data -> unknown condition (None), still treated as comparable (don't over-block).
+    assert tracker._amazon_offer({}) == {"seller": None, "condition": None, "comparable": True, "note": ""}
 
 
 def test_proxy_params():

@@ -4,8 +4,8 @@ Reads targets.csv, dispatches each row to the right ScrapingBee endpoint, normal
 every response into one typed PriceSnapshot, appends to history.csv, and posts a Slack
 alert ONLY when a competitor newly undercuts you (or drops further) while in stock.
 
-The generic (non-marketplace) path tries JSON-LD first — deterministic and 1 credit —
-and only falls back to AI extraction if the page has no usable structured data.
+The generic (non-marketplace) path tries a per-site selector, JSON-LD, then a price meta
+tag — deterministic and 1 credit — and only falls back to AI extraction when none find a price.
 Run end-to-end with `python tracker.py`.
 """
 from __future__ import annotations
@@ -43,6 +43,7 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")  # optional; prints if u
 THRESHOLD = float(os.environ.get("UNDERCUT_THRESHOLD", "0.05"))
 OUR_CURRENCY = os.environ.get("OUR_CURRENCY", "USD")  # we compare prices only in this currency (no FX)
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "8"))  # concurrent fetches; keep <= your plan's concurrency cap
+HEALTH_MAX_FAIL_RATE = float(os.environ.get("HEALTH_MAX_FAIL_RATE", "0.25"))  # alert if this fraction of targets return no price
 
 HTML_API = "https://app.scrapingbee.com/api/v1/"
 AMAZON_API = "https://app.scrapingbee.com/api/v1/amazon/product"
@@ -53,7 +54,12 @@ AI_RULES = {
     "currency": {"description": "ISO 4217 currency code", "type": "string"},
     "in_stock": {"description": "whether the product is in stock", "type": "boolean"},
 }
-CURRENCY_SYMBOLS = {"$": "USD", "£": "GBP", "€": "EUR", "₹": "INR", "¥": "JPY"}
+# Unambiguous currency symbols only. "$" (USD/CAD/AUD/MXN/SGD/NZD/HKD) and "¥" (JPY/CNY) are
+# each shared by several currencies — a price string alone can't tell them apart — so they're
+# resolved by _symbol_currency() against OUR_CURRENCY instead of being blindly mapped to USD/JPY.
+CURRENCY_SYMBOLS = {"£": "GBP", "€": "EUR", "₹": "INR"}
+_DOLLAR = {"USD", "CAD", "AUD", "NZD", "SGD", "HKD", "MXN"}
+_YEN = {"JPY", "CNY"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +71,8 @@ class PriceSnapshot:
     currency: str | None
     in_stock: bool
     our_price: float
+    seller: str | None = None        # who holds the offer we read (Buy Box winner)
+    condition: str | None = None     # New / Used-… — so a wrong-offer comparison is auditable
 
 
 def normalize_currency(code: str | None) -> str | None:
@@ -88,12 +96,33 @@ def _check_auth(r: requests.Response) -> None:
         sys.exit("ScrapingBee returned 401 — check SCRAPINGBEE_API_KEY.")
 
 
+def _amazon_offer(d: dict[str, Any]) -> dict[str, Any]:
+    """Amazon's headline `price` is the Buy Box winner — which can be a *used* unit, a
+    third-party seller, or a *multipack* variant. Surface who/what it actually is so the
+    comparison is apples-to-apples (and auditable), and flag offers that aren't."""
+    bb = d.get("buybox") or []
+    offer = bb[0] if bb else {}
+    cond = " ".join((offer.get("condition") or "").split()) or None   # " Buy New " -> "Buy New"
+    seller = offer.get("seller_name") or (d.get("featured_merchant") or {}).get("name") or None
+    is_new = cond is None or ("new" in cond.lower() and "used" not in cond.lower())
+    # pack size of the *selected* variant — a "4 Pack" price isn't comparable to a single unit
+    pack = next(((v.get("dimensions") or {}).get("Size")
+                 for v in (d.get("variations") or []) if v.get("selected")), None)
+    multipack = bool(pack and re.search(r"\b([2-9]|\d{2,})\s*-?\s*pack", pack, re.I))
+    note = (f"Buy Box offer is '{cond}', not New — not comparable to your price" if not is_new
+            else f"selected variant is '{pack}' — looks like a multipack, not a single unit" if multipack
+            else "")
+    return {"seller": seller, "condition": None if cond is None else ("New" if is_new else cond),
+            "comparable": is_new and not multipack, "note": note}
+
+
 def fetch_amazon(s: requests.Session, asin: str) -> dict[str, Any]:
     r = s.get(AMAZON_API, params={"query": asin}, timeout=90)
     _check_auth(r)
     d = r.json()
     return {"price": d.get("price"), "currency": d.get("currency"),
-            "in_stock": d.get("stock") not in (None, "", "Currently unavailable")}
+            "in_stock": d.get("stock") not in (None, "", "Currently unavailable"),
+            **_amazon_offer(d)}
 
 
 def fetch_walmart(s: requests.Session, item_id: str) -> dict[str, Any]:
@@ -101,7 +130,8 @@ def fetch_walmart(s: requests.Session, item_id: str) -> dict[str, Any]:
     _check_auth(r)
     d = r.json()
     return {"price": d.get("price"), "currency": d.get("currency"),
-            "in_stock": not d.get("out_of_stock", False)}
+            "in_stock": not d.get("out_of_stock", False),
+            "seller": d.get("seller_name"), "condition": "New"}  # Walmart PDPs are new retail
 
 
 def _find_product(node: Any) -> dict | None:
@@ -143,9 +173,24 @@ def _jsonld_price(html: str) -> dict[str, Any] | None:
     return None
 
 
+def _symbol_currency(text: str) -> str | None:
+    """ISO code for a currency symbol in `text`. £/€/₹ are unambiguous; a bare "$"/"¥" is
+    resolved to OUR_CURRENCY only when that's plausibly the right family (you track your own
+    market) — otherwise the raw symbol is kept, so the cross-currency guard treats it as foreign
+    instead of silently assuming USD. Explicit ISO codes (JSON-LD/parsers) always take priority."""
+    for sym, code in CURRENCY_SYMBOLS.items():
+        if sym in text:
+            return code
+    if "$" in text:
+        return OUR_CURRENCY if OUR_CURRENCY in _DOLLAR else "$"
+    if "¥" in text:
+        return OUR_CURRENCY if OUR_CURRENCY in _YEN else "¥"
+    return None
+
+
 def _parse_price_text(text: str) -> tuple[float | None, str | None]:
     """Pull a number + currency out of a price string like '£51.77' or '1.299,00 €'."""
-    currency = next((c for s, c in CURRENCY_SYMBOLS.items() if s in text), None)
+    currency = _symbol_currency(text)
     m = re.search(r"\d[\d.,\s]*\d|\d", text)
     if not m:
         return None, currency
@@ -259,7 +304,8 @@ def send_alert(text: str) -> None:
     if SLACK_WEBHOOK_URL:
         requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=10)
     else:
-        print("ALERT:", text)
+        # Slack renders :rotating_light: as an emoji; in a terminal, show the emoji directly.
+        print("ALERT:", text.replace(":rotating_light:", "🚨"))
 
 
 def _fetch_target(session: requests.Session, t: dict) -> tuple[dict | None, str | None]:
@@ -303,14 +349,20 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
         if prev and abs(comp - prev[0]) > 0.5 * prev[0]:
             print(f"  ? {sku}: price moved >50% ({prev[0]} -> {comp}) — verify before trusting")
 
+        comparable = data.get("comparable", True)   # same condition + single unit as your SKU?
+        if data.get("note"):
+            print(f"  ⚠ {sku}: {data['note']}")
+
         snap = PriceSnapshot(now, sku, t["source"], float(comp),
-                             normalize_currency(data["currency"]), bool(data["in_stock"]), our_price)
+                             normalize_currency(data["currency"]), bool(data["in_stock"]),
+                             our_price, data.get("seller"), data.get("condition"))
         snapshots.append(snap)
 
-        # only compare prices in the same currency — this tracker does NOT do FX conversion,
-        # so a EUR competitor vs a USD price is flagged and skipped, not silently mis-compared.
+        # only compare prices in the same currency (no FX) AND for a comparable offer —
+        # a used unit or a multipack isn't an undercut of your new single-unit price, so
+        # it's recorded with a note rather than firing a false alert.
         currency_ok = (snap.currency or OUR_CURRENCY) == OUR_CURRENCY
-        now_uc = currency_ok and is_undercut(comp, our_price)
+        now_uc = currency_ok and comparable and is_undercut(comp, our_price)
         prev_uc = bool(prev) and currency_ok and is_undercut(prev[0], prev[1])
         if snap.in_stock and now_uc and (not prev_uc or comp < prev[0] - 0.01):
             pct = (our_price - comp) / our_price * 100
@@ -319,12 +371,22 @@ def track(targets: str = "targets.csv", history: str = "history.csv") -> list[Pr
 
         if not currency_ok:
             note = f"  [currency {snap.currency}≠{OUR_CURRENCY}, not compared]"
+        elif not comparable:
+            note = f"  [{snap.condition or 'non-comparable'} offer, not compared]"
         elif now_uc:
             note = f"  <-- UNDERCUT {((our_price - comp) / our_price * 100):.1f}%"
         else:
             note = ""
         stock = "" if snap.in_stock else " [OUT OF STOCK]"
         print(f"  {sku:12} {snap.competitor:8} {snap.currency} {comp} (ours {our_price}){note}{stock}")
+
+    # Monitor the monitor: a tracker's #1 silent failure is returning nulls for a chunk of
+    # SKUs (a broken selector, a block, a quota hit) while the dashboard just goes flat for
+    # weeks. Alert on coverage loss so you hear about the tracker rotting, not just price moves.
+    failed = len(rows) - len(snapshots)
+    if rows and (failed == len(rows) or (failed >= 2 and failed / len(rows) >= HEALTH_MAX_FAIL_RATE)):
+        send_alert(f":rotating_light: tracker health: {failed}/{len(rows)} targets returned no price "
+                   f"this run — likely a broken selector, a block, or a quota/API issue, not real moves")
 
     if not snapshots:
         print("No snapshots captured.")

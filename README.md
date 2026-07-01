@@ -1,8 +1,8 @@
 # Competitor Price Tracker
 
-A small, working competitor-price tracker built on the [ScrapingBee](https://www.scrapingbee.com/) API. Companion to the article *How to Track Competitor Prices Using Web Scraping*. Clone it, point it at your competitors, and get a Slack ping when one undercuts you.
+A small, working competitor-price tracker built on the [ScrapingBee](https://www.scrapingbee.com/) API. Companion to the article [*How to Track Competitor Prices Using Web Scraping*](https://www.scrapingbee.com/blog/how-to-track-competitor-pricing-with-scraping). Clone it, point it at your competitors, and get a Slack ping when one undercuts you.
 
-It fetches Amazon and Walmart via ScrapingBee's dedicated parsers and any other retailer via the HTML API with AI extraction, normalizes everything into one schema, stores snapshots, and alerts on undercuts.
+It fetches Amazon and Walmart via ScrapingBee's dedicated parsers and most other retailers via the HTML API with AI extraction, normalizes everything into one schema, stores snapshots, and alerts on undercuts.
 
 > **Status:** a point-in-time companion (last tested June 2026), not a maintained product. Dependencies, GitHub Actions versions, and the ScrapingBee API surface move over time — bump them as needed. The patterns are the durable part; the version pins and exact field names are not.
 
@@ -40,7 +40,7 @@ Get a key (free trial, no card) at https://www.scrapingbee.com/.
    Output (real run):
 
    ```text
-   MOUSE-001    amazon   USD 12.15 (ours 14.99)  <-- UNDERCUT 18.9%
+   MOUSE-001    amazon   USD 13.99 (ours 14.99)  <-- UNDERCUT 6.7%
    MOUSE-002    walmart  USD 13.83 (ours 14.99)  <-- UNDERCUT 7.7%
    HOODIE-009   generic  USD 69.0 (ours 75.0)  <-- UNDERCUT 8.0% [OUT OF STOCK]
    ```
@@ -57,7 +57,7 @@ Get a key (free trial, no card) at https://www.scrapingbee.com/.
 | `matcher.py`       | SKU matching: GTIN-first, then model code, then fuzzy title (with confidence) |
 | `build_targets.py` | search a keyword + match results to your product → suggested `targets.csv` rows |
 | `ai_surface.py`    | how an AI assistant prices/ranks a product right now (ScrapingBee ChatGPT endpoint) — the surface buyers increasingly check |
-| `mcp_server.py`    | exposes the history as an MCP tool (`undercuts`) an assistant can call |
+| `mcp_server.py`    | exposes the history as MCP tools (`undercuts` = current standings, `recent_changes` = who repriced) an assistant can call |
 | `test_tracker.py`  | deterministic tests for the alert logic (no API) — `python test_tracker.py` |
 | `targets.csv`      | your watch list |
 
@@ -83,12 +83,13 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 
 ## How it behaves
 
-- **Generic rows use a deterministic cascade, AI last.** `fetch_generic` tries, in order: a **per-site CSS `selector`** you set in `targets.csv` → **JSON-LD** (`schema.org/Product`) → **OpenGraph/microdata price meta** → and only then **AI extraction**. The first three are deterministic and cost 1 credit; AI is the flaky/expensive fallback (it sometimes 200s with `"Sorry, couldn't get the response from AI"` instead of JSON, and still bills). So most sites resolve without AI — and for the awkward ones, **add a `selector` and any public product page becomes trackable** instead of failing. If all four miss, the tracker logs it and moves on rather than crashing.
+- **Generic rows use a deterministic cascade, AI last.** `fetch_generic` tries, in order: a **per-site CSS `selector`** you set in `targets.csv` → **JSON-LD** (`schema.org/Product`) → **OpenGraph/microdata price meta** → and only then **AI extraction**. The first three are deterministic and cost 1 credit; AI is the flaky/expensive fallback (it sometimes 200s with `"Sorry, couldn't get the response from AI"` instead of JSON, and still bills). So most sites resolve without AI — and for the awkward ones, **add a `selector` and the page usually becomes trackable** instead of failing. If all four miss, the tracker logs it and moves on rather than crashing.
 - **Protected sites: escalate the proxy per target.** A site behind Cloudflare/DataDome blocks the cheap fetch, so the whole cascade comes up empty. Set `proxy=premium` (residential + JS, 25 credits) or `proxy=stealth` (hardest anti-bot, 75 credits) on that target and the cascade runs through the right proxy instead of getting blocked. It's per-target and opt-in, so you don't silently pay stealth rates for sites that don't need it.
 - **Fetches run concurrently.** The tracker fans out with a thread pool (`MAX_WORKERS`, default 8 — set it to your plan's concurrency cap), so hundreds of SKUs refresh in the time a sequential loop handles a dozen. Results are still processed in order, so alerts and history stay deterministic.
 - **Alerts fire on change, not every run.** You're pinged when a competitor *newly* undercuts you (or drops further) **and** is in stock — not every 6 hours for a competitor that's been cheaper all week. Change detection needs prior history, which is why CI commits `history.csv` back (below).
+- **Only comparable offers alert.** A marketplace listing's headline price is whatever wins the Buy Box — which can be a *used* unit, a *third-party* seller, or a *multipack* variant. `fetch_amazon` reads the Buy Box condition + seller, records both in every snapshot (so a wrong-offer comparison is auditable, not invisible), and a used or multipack offer is logged with a `⚠` note but **does not fire an undercut alert** — a used unit at $7.72 isn't an undercut of your new $14.99.
 - **History accumulates via git-scraping.** `history.csv` is tracked on purpose: the GitHub Actions job checks it out, appends the new run, and commits it back, so price history builds up in git (diffable over time). Running locally also appends to it — that's expected. Trade-offs: it adds a commit (and grows the CSV) every run, so over a year of 6-hourly runs the repo carries ~1,500 small commits (squash or roll to a database if that bothers you); and the bot pushes to the default branch, so if you **protect** that branch, point the workflow at an unprotected data branch or a database instead.
-- **Cross-currency is not compared.** Prices are compared only within `OUR_CURRENCY` (default USD); there's **no FX conversion**. A competitor priced in another currency is recorded and flagged `[currency …≠USD, not compared]` rather than silently mis-compared (€63 is not "cheaper" than $75). Add FX if you track multiple currencies.
+- **Cross-currency is not compared — to the limit of what a price string reveals.** Prices are compared only within `OUR_CURRENCY` (default USD); there's **no FX conversion**, so a competitor in another currency is recorded and flagged `[currency …≠USD, not compared]` instead of mis-compared (€63 is not "cheaper" than $75). The honest caveat: this leans on the currency *code*. `€`/`£` are unambiguous, but `$` is shared by USD/CAD/AUD/MXN/… and can't be told apart from a bare symbol — so a symbol-only `$` is **assumed to be your `OUR_CURRENCY`** (`_symbol_currency` keeps a clearly-foreign symbol like `¥` foreign, but two dollar currencies are indistinguishable). The dedicated parsers and JSON-LD return an explicit code, so `CAD`≠`USD` *is* caught there; the gap is only the generic symbol-only path. Track same-market competitors there, or use sources that expose a currency code. Add FX if you compare across currencies.
 - **Marketplace prices move; Walmart varies by store.** One item id returned $13.83 / $13.52 / $9.88 across calls. Walmart's `store_id` is *meant* to pin a store for like-for-like comparison, but in testing it was slow/intermittent — verify it before relying on it.
 - **US-centric by design.** The Walmart parser is US-only and the worked example is Amazon.com/USD. Outside the US, use Amazon's `domain` and the generic path; Walmart won't apply.
 
@@ -106,7 +107,7 @@ python build_targets.py "Logitech M185 Wireless Mouse" "logitech wireless mouse"
 
 - `401` / "check SCRAPINGBEE_API_KEY" → key missing or wrong; the tracker exits with that message.
 - `429` → you exceeded your plan's concurrency cap; the session already retries with backoff.
-- `pip install` fails on a very new/locked-down Python → install the core only (`pip install requests beautifulsoup4 python-dotenv`); `duckdb`/`fastmcp` are needed only for `mcp_server.py`.
+- `pip install` fails on a very new/locked-down Python → install the core only (`pip install requests beautifulsoup4 python-dotenv`); `duckdb`/`fastmcp`/`pandas` are needed only for `mcp_server.py`.
 
 ## Tests
 
